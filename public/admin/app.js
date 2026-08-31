@@ -458,6 +458,7 @@ async function importModal(loadSeedImmediately = false) {
         <textarea id="f-json" class="mono" style="min-height:220px" placeholder='[{"title":"…","category":"…","content":"…"}]'></textarea>
         <div class="hint">
           <button type="button" class="btn btn-sm" id="btn-load-seed">加载示例数据包</button>
+          <button type="button" class="btn btn-sm" id="btn-load-library" style="margin-left:6px">一键导入内置资料库（342 条）</button>
           <button type="button" class="btn btn-sm" id="btn-clear-json" style="margin-left:6px">清空</button>
         </div>
       </div>`,
@@ -486,6 +487,22 @@ async function importModal(loadSeedImmediately = false) {
     }
   };
   $('#btn-load-seed').addEventListener('click', loadSeed);
+  $('#btn-load-library').addEventListener('click', async (e) => {
+    const btn = e.target;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/data/seed-library.json');
+      const data = await res.json();
+      const cards = Array.isArray(data) ? data : data.cards;
+      const r = await api('/cards', 'POST', { cards });
+      toast(`内置资料库导入完成：成功 ${r.data.created} 条`);
+      closeModal();
+      await loadCards();
+    } catch (err) {
+      toast(err.message, 'error');
+      btn.disabled = false;
+    }
+  });
   if (loadSeedImmediately) loadSeed();
 }
 
@@ -681,14 +698,20 @@ async function loadProxyServices() {
         const res = await fetch(`/api/v1/proxy/${encodeURIComponent(slug)}`, {
           headers: { authorization: `Bearer ${state.token}` },
         });
-        const payload = await res.json().catch(() => ({}));
+        const text = await res.text();
+        let pretty = text;
+        try {
+          const parsed = JSON.parse(text);
+          pretty = JSON.stringify(parsed, null, 2);
+        } catch {}
+        if (pretty.length > 6000) pretty = pretty.slice(0, 6000) + '\n…（内容过长已截断）';
         openModal({
           title: `测试：${slug}`,
           wide: true,
           hideFooter: true,
           bodyHTML: `
-            <p class="td-muted" style="margin-bottom:10px">HTTP ${res.status} ｜ code=${payload.code ?? '—'} ｜ ${esc(payload.message || '')}</p>
-            <pre class="key-reveal" style="max-height:380px;overflow:auto">${esc(JSON.stringify(payload.data ?? payload, null, 2))}</pre>
+            <p class="td-muted" style="margin-bottom:10px">HTTP ${res.status} ｜ ${res.headers.get('content-type') || '未知类型'}</p>
+            <pre class="key-reveal" style="max-height:380px;overflow:auto;white-space:pre-wrap">${esc(pretty || '（空响应）')}</pre>
             <div style="margin-top:12px"><button class="btn" id="close-test">关闭</button></div>`,
         });
         $('#close-test').addEventListener('click', closeModal);
