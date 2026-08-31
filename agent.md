@@ -108,8 +108,15 @@ MoonAPI/
 | `cards/{id}.json` | 卡片全文：`{id,title,category,content,source,tags,createdAt,updatedAt}` |
 | `meta/cards-index.json` | 卡片索引数组：`[{id,title,category,updatedAt},...]`（列表页数据源） |
 | `meta/admin-token.json` | 管理员令牌 SHA-256 哈希（首次 `POST /api/admin/setup` 写入） |
-| `meta/api-keys.json` | API Key 表：`{ "mk_live_…": {name,status,createdAt} }` |
+| `meta/api-keys.json` | API Key 表：`{ "mk_live_…": {name,status,createdAt,dailyQuota} }` |
 | `meta/daily-pins.json` | 每日排期表：`{ "YYYY-MM-DD": 卡片id }` |
+| `meta/proxy-services.json` | 代理服务注册表（覆盖内置默认，后台可增删改，无需重新部署） |
+| `meta/media-index.json` | 媒体文件索引：`[{id,name,contentType,size,createdAt},...]` |
+| `media/{id}` | 媒体文件本体（≤5MB/件，经 `/api/v1/media/{id}` 分发） |
+| `stats/{YYYY-MM-DD}.json` | 当日用量：`{total, byKey, byEndpoint}`（waitUntil 异步写入） |
+
+**KV（绑定名 `MOONAPI_KV`）用途**：仅用于代理响应的带 TTL 缓存（`proxy:{slug}:{query}`，
+`expirationTtl` ≥ 60s）。免费额度：10 万次读/天、1000 次写/天，故缓存默认关闭，按需为单个代理服务开启。
 
 ### 每日卡片选取逻辑
 
@@ -131,8 +138,8 @@ MoonAPI/
 | --- | --- | --- |
 | Phase 0 | 仓库底座：agent.md、README、Pages 部署配置 | ✅ 2026-09-01 |
 | Phase 1 | 每日知识卡片接口 + 管理后台（卡片/密钥/排期）+ /docs 文档站 | ✅ 2026-09-01（待部署验证） |
-| Phase 2 | 第三方接口代理：转发 `https://api.yujin.cn/` 的接口并二创，新增 `/api/v1/proxy/*` | ⬜ 待启动 |
-| Phase 3 | 能力增强（按需求再定：用量统计、更多接口、自定义数据源等） | ⬜ |
+| Phase 2 | 第三方接口代理框架（后台可配置上游、统一信封二创、KV 缓存）+ 媒体托管 + 用量统计与密钥配额 | ✅ 2026-09-01 |
+| Phase 3 | 能力增强（按需求再定：更多内置上游、图片处理、更多接口等） | ⬜ |
 
 ## 七、硬性约束（时刻谨记）
 
@@ -155,3 +162,8 @@ MoonAPI/
   修复管理后台两个 bug：① 登录屏与主界面叠层显示（CSS `hidden` 被显式 `display` 覆盖）；
   ② 初始化管理员后被弹回认证屏（KV 最终一致性导致写后即读失败）——认证、密钥、卡片索引、
   排期全部迁移至 R2 强一致对象存储。注意：旧版本写入 KV 的管理员令牌不再使用，需重新初始化。
+- 2026-09-01（深夜）：Phase 2 完成。新增：代理服务框架（/api/v1/proxy/{slug}，上游后台可配置、
+  统一信封二创、KV 可选缓存、管理员令牌可直接测试）；媒体托管（/api/v1/media/{id} + 后台上传）；
+  用量统计（/api/admin/stats，R2 异步记录）；密钥每日配额限流（42901）。
+  备注：开发环境无法直连 api.yujin.cn（连接被重置），默认内置其首页探测服务，
+  部署到 Cloudflare 边缘后由用户在后台「测试」验证连通性并按需增删上游。
