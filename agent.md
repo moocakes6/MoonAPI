@@ -167,3 +167,11 @@ MoonAPI/
   用量统计（/api/admin/stats，R2 异步记录）；密钥每日配额限流（42901）。
   备注：开发环境无法直连 api.yujin.cn（连接被重置），默认内置其首页探测服务，
   部署到 Cloudflare 边缘后由用户在后台「测试」验证连通性并按需增删上游。
+- 2026-09-01（Phase 2.5）：① 内置卡片资料库 342 条（反诈 111、校园安全 38、校园学习 45、
+  法律 25、网络安全 24、科学 26、文史 26、健康 28、心理 19），存于 /data/seed-library.json，
+  GET /api/admin/cards 首次空库时自动入库（防重标记 meta/seed-applied.json），后台亦有一键导入按钮。
+  ② 代理引擎升级为浏览器化请求头（UA/Referer/Accept-Language），支持按服务自定义 headers；
+  内置上游新增 hitokoto（文本示例）、bing-wallpaper（图片透传示例）。
+  ③ 上游返回 4xx/5xx 时返回带响应预览的诊断 JSON（code 50202）；测试弹窗展示原始响应文本。
+  ④ 用户实测 yujin-root 返回 HTTP 530（上游 Cloudflare 拦截/源站异常），非本项目代码问题；
+  api.yujin.cn 恢复可用后在后台直接新增其具体接口即可。
