@@ -19,6 +19,7 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
 html { font-size: 15px; }
 body { font-family: var(--sans); color: var(--text); background: var(--paper); min-height: 100vh; }
 button { font-family: inherit; cursor: pointer; }

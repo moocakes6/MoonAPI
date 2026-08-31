@@ -173,34 +173,51 @@ $('#auth-form').addEventListener('submit', async (e) => {
   btn.disabled = true;
   try {
     if (authMode === 'setup') {
-      await (async () => {
+      let payload = {};
+      try {
         const res = await fetch(`${API_BASE}/setup`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ token }),
         });
-        const payload = await res.json().catch(() => ({}));
-        if (!res.ok || payload.code !== 0) {
-          const err = new Error(payload.message || '初始化失败');
-          err.code = payload.code;
-          throw err;
+        payload = await res.json().catch(() => ({}));
+        if (payload.code === 40901) {
+          toast('管理员已初始化，请直接登录');
+          showAuthScreen(false);
+          $('#auth-token').value = token;
+          return;
         }
-        return payload;
-      })();
-      toast('管理员初始化成功');
+        if (!res.ok || payload.code !== 0) throw new Error(payload.message || '初始化失败');
+      } catch (err) {
+        if (err instanceof TypeError) throw new Error('网络错误，无法连接服务端');
+        throw err;
+      }
+      state.token = token;
+      localStorage.setItem(TOKEN_KEY, token);
+      toast('管理员初始化成功，已进入控制台');
+      enterApp();
+      return;
     }
+
     state.token = token;
     localStorage.setItem(TOKEN_KEY, token);
-    try {
-      await api('/login', 'POST', {});
-    } catch (err) {
-      if (err.code === 50301) { state.token = ''; localStorage.removeItem(TOKEN_KEY); showAuthScreen(true); return; }
-      throw err;
-    }
+    await api('/login', 'POST', {});
     enterApp();
   } catch (err) {
-    if (authMode === 'login' && err.code === 50301) return showAuthScreen(true);
-    toast(err.message, 'error');
+    if (authMode === 'login' && err.code === 50301) {
+      state.token = '';
+      localStorage.removeItem(TOKEN_KEY);
+      showAuthScreen(true);
+      $('#auth-token').value = token;
+      return;
+    }
+    if (err.code === 40102 || err.status === 401) {
+      state.token = '';
+      localStorage.removeItem(TOKEN_KEY);
+      toast('管理员令牌错误', 'error');
+    } else {
+      toast(err.message, 'error');
+    }
   } finally {
     btn.disabled = false;
   }
