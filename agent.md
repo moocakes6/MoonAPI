@@ -96,22 +96,20 @@ MoonAPI/
 └── （预留）Phase 2 第三方代理接口
 ```
 
-### 数据存储约定
+### 数据存储约定（2026-09-01 修订：全部迁移至 R2）
 
-**KV（绑定名 `MOONAPI_KV`）键设计：**
-
-| 键 | 值 | 说明 |
-| --- | --- | --- |
-| `admin:token` | 管理员令牌的 SHA-256 | 首次通过 `POST /api/admin/setup` 写入 |
-| `apikey:{key}` | `{name, createdAt, status}` | API Key 记录 |
-| `cards:index` | `[{id,title,category,updatedAt},...]` | 卡片索引（列表页数据源） |
-| `daily:{YYYY-MM-DD}` | 卡片 id | 每日排期（指定日期返回指定卡片） |
+> 修订原因：KV 为最终一致（写入后最长 60 秒才可读），曾导致「初始化管理员后立即登录被判定未初始化」的
+> 回弹 bug。现所有需要写后即读的数据一律存 R2（强一致），KV 绑定保留，供未来计数/缓存类场景使用。
 
 **R2（绑定名 `MOONAPI_R2`）对象设计：**
 
 | 对象键 | 内容 |
 | --- | --- |
 | `cards/{id}.json` | 卡片全文：`{id,title,category,content,source,tags,createdAt,updatedAt}` |
+| `meta/cards-index.json` | 卡片索引数组：`[{id,title,category,updatedAt},...]`（列表页数据源） |
+| `meta/admin-token.json` | 管理员令牌 SHA-256 哈希（首次 `POST /api/admin/setup` 写入） |
+| `meta/api-keys.json` | API Key 表：`{ "mk_live_…": {name,status,createdAt} }` |
+| `meta/daily-pins.json` | 每日排期表：`{ "YYYY-MM-DD": 卡片id }` |
 
 ### 每日卡片选取逻辑
 
@@ -153,3 +151,7 @@ MoonAPI/
 
 - 2026-09-01：项目立项。仓库克隆确认，Cloudflare 令牌验证通过（可读 KV 与 R2），
   KV 命名空间 `moonapi`、R2 桶 `moonapi` 已存在。Phase 0 + Phase 1 代码完成，待部署验证。
+- 2026-09-01（晚）：Pages 部署成功（/api/health 返回 kv、r2 均 true），自定义域 api.lunor.top 生效。
+  修复管理后台两个 bug：① 登录屏与主界面叠层显示（CSS `hidden` 被显式 `display` 覆盖）；
+  ② 初始化管理员后被弹回认证屏（KV 最终一致性导致写后即读失败）——认证、密钥、卡片索引、
+  排期全部迁移至 R2 强一致对象存储。注意：旧版本写入 KV 的管理员令牌不再使用，需重新初始化。
