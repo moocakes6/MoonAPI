@@ -1,16 +1,38 @@
-export async function getCardIndex(env) {
-  const raw = await env.MOONAPI_KV.get('cards:index');
-  if (!raw) return [];
+const INDEX_KEY = 'meta/cards-index.json';
+const PINS_KEY = 'meta/daily-pins.json';
+
+export async function readMeta(env, key, fallback) {
+  const obj = await env.MOONAPI_R2.get(key);
+  if (!obj) return fallback;
   try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return await obj.json();
   } catch {
-    return [];
+    return fallback;
   }
 }
 
+export async function writeMeta(env, key, value) {
+  await env.MOONAPI_R2.put(key, JSON.stringify(value), {
+    httpMetadata: { contentType: 'application/json' },
+  });
+}
+
+export async function getCardIndex(env) {
+  const index = await readMeta(env, INDEX_KEY, []);
+  return Array.isArray(index) ? index : [];
+}
+
 export async function saveCardIndex(env, index) {
-  await env.MOONAPI_KV.put('cards:index', JSON.stringify(index));
+  await writeMeta(env, INDEX_KEY, index);
+}
+
+export async function getDailyPins(env) {
+  const pins = await readMeta(env, PINS_KEY, {});
+  return pins && typeof pins === 'object' && !Array.isArray(pins) ? pins : {};
+}
+
+export async function saveDailyPins(env, pins) {
+  await writeMeta(env, PINS_KEY, pins);
 }
 
 export async function getCard(env, id) {
@@ -32,10 +54,15 @@ export async function putCard(env, card) {
 
 export async function deleteCard(env, id) {
   await env.MOONAPI_R2.delete(`cards/${id}.json`);
-  const pins = await env.MOONAPI_KV.list({ prefix: 'daily:' });
-  for (const pin of pins.keys) {
-    if ((await env.MOONAPI_KV.get(pin.name)) === id) await env.MOONAPI_KV.delete(pin.name);
+  const pins = await getDailyPins(env);
+  let changed = false;
+  for (const [date, cardId] of Object.entries(pins)) {
+    if (cardId === id) {
+      delete pins[date];
+      changed = true;
+    }
   }
+  if (changed) await saveDailyPins(env, pins);
 }
 
 const FALLBACK_CARDS = [
@@ -59,7 +86,8 @@ export function hashString(str) {
 }
 
 export async function pickDailyCard(env, date) {
-  const pinnedId = await env.MOONAPI_KV.get(`daily:${date}`);
+  const pins = await getDailyPins(env);
+  const pinnedId = pins[date];
   if (pinnedId) {
     const pinned = await getCard(env, pinnedId);
     if (pinned) return { card: pinned, source: 'pinned' };
