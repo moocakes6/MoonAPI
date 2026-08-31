@@ -19,6 +19,7 @@ export async function onRequestGet({ request, env }) {
     name: record?.name || '',
     status: record?.status || 'active',
     createdAt: record?.createdAt || null,
+    dailyQuota: Number(record?.dailyQuota) || 0,
   }));
   keys.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   return ok({ total: keys.length, keys });
@@ -47,11 +48,12 @@ export async function onRequestPost({ request, env }) {
   }
 
   const name = String(body?.name || '').trim().slice(0, 60) || '未命名应用';
+  const dailyQuota = Math.max(0, Math.min(1000000, Number(body?.dailyQuota) || 0));
   const random = [...crypto.getRandomValues(new Uint8Array(24))]
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
   const key = `mk_live_${random}`;
-  store[key] = { name, status: 'active', createdAt: new Date().toISOString() };
+  store[key] = { name, status: 'active', createdAt: new Date().toISOString(), dailyQuota };
   await saveApiKeys(env, store);
-  return ok({ key, name }, { message: 'API Key 已创建，完整 Key 仅此一次显示，请立即保存' });
+  return ok({ key, name, dailyQuota }, { message: 'API Key 已创建，完整 Key 仅此一次显示，请立即保存' });
 }
