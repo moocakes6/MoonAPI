@@ -239,9 +239,12 @@ $('#logout-btn').addEventListener('click', () => {
 
 /* ---------- 路由 ---------- */
 const VIEWS = {
+  stats: { title: '数据概览', desc: '服务运行状态与近 7 天调用量统计', render: renderStats },
   cards: { title: '知识卡片', desc: '管理每日知识卡片库：新增、批量导入、编辑与删除', render: renderCards },
   daily: { title: '每日排期', desc: '指定某一天固定返回某张卡片，未排期的日子自动轮换', render: renderDaily },
-  keys: { title: 'API 密钥', desc: '创建与吊销对外接口的访问密钥', render: renderKeys },
+  proxy: { title: '代理服务', desc: '配置第三方接口转发（如 api.yujin.cn），无需重新部署即可增删上游', render: renderProxy },
+  media: { title: '媒体库', desc: '上传文件到 R2，通过 /api/v1/media/{id} 对外分发', render: renderMedia },
+  keys: { title: 'API 密钥', desc: '创建与吊销对外接口的访问密钥，可设置每日配额', render: renderKeys },
 };
 
 function route() {
@@ -574,14 +577,293 @@ async function loadPins() {
   }
 }
 
+/* ---------- 视图：数据概览 ---------- */
+async function renderStats() {
+  const view = $('#view');
+  view.innerHTML = '<div class="card-panel"><div class="empty-state"><p>加载中…</p></div></div>';
+  try {
+    const res = await api('/stats?days=7');
+    const { summary, usage } = res.data;
+    const tiles = [
+      ['今日调用', summary.callsToday],
+      ['近 7 天调用', summary.callsLast7Days],
+      ['知识卡片', summary.cards],
+      ['API 密钥', summary.keys],
+      ['代理服务', summary.proxyServices],
+    ];
+    const topEndpoints = Object.entries(usage[0]?.byEndpoint || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    view.innerHTML = `
+      <div class="stat-grid">
+        ${tiles.map(([label, value]) => `
+          <div class="stat-tile"><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>`).join('')}
+      </div>
+      <div class="card-panel" style="margin-top:18px">
+        <div class="panel-head"><strong>近 7 天调用趋势</strong></div>
+        <table class="data">
+          <thead><tr><th>日期</th><th>调用总量</th><th>独立密钥数</th><th>分布</th></tr></thead>
+          <tbody>
+            ${usage.map((d) => {
+              const max = Math.max(...usage.map((x) => x.total || 0), 1);
+              const pct = Math.round(((d.total || 0) / max) * 100);
+              return `<tr>
+                <td class="mono">${esc(d.date)}${d.date === todayCN() ? ' <span class="tag tag-pin">今天</span>' : ''}</td>
+                <td><strong>${d.total || 0}</strong></td>
+                <td class="td-muted">${Object.keys(d.byKey || {}).length}</td>
+                <td style="width:38%"><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-panel" style="margin-top:18px">
+        <div class="panel-head"><strong>今日接口调用分布</strong></div>
+        ${topEndpoints.length === 0 ? '<div class="empty-state"><span class="empty-ico">◔</span><p>今天还没有接口调用记录。</p></div>' : `
+        <table class="data">
+          <thead><tr><th>接口</th><th>调用次数</th></tr></thead>
+          <tbody>${topEndpoints.map(([ep, n]) => `<tr><td class="mono">${esc(ep)}</td><td><strong>${n}</strong></td></tr>`).join('')}</tbody>
+        </table>`}
+      </div>`;
+  } catch (err) {
+    view.innerHTML = `<div class="card-panel"><div class="empty-state"><p>${esc(err.message)}</p></div></div>`;
+  }
+}
+
+/* ---------- 视图：代理服务 ---------- */
+async function renderProxy() {
+  const view = $('#view');
+  view.innerHTML = `
+    <div class="notice">代理服务会把请求转发到你配置的上游接口，并把 JSON 结果包装成 MoonAPI 统一响应信封（二创转发）。
+    所有变更保存在 R2，<strong>无需重新部署</strong>。调用方使用：<span class="mono">GET /api/v1/proxy/{slug}</span>（需 API Key）。</div>
+    <div class="card-panel">
+      <div class="panel-head">
+        <button class="btn btn-gold" id="btn-add-proxy">＋ 新增代理服务</button>
+        <div class="spacer"></div>
+        <span class="td-muted">KV 缓存仅用于 JSON 响应，尊重免费额度（按服务设置缓存秒数）</span>
+      </div>
+      <div id="proxy-wrap"></div>
+    </div>`;
+  $('#btn-add-proxy').addEventListener('click', () => proxyFormModal());
+  loadProxyServices();
+}
+
+async function loadProxyServices() {
+  const wrap = $('#proxy-wrap');
+  if (!wrap) return;
+  try {
+    const res = await api('/proxy');
+    const services = res.data.services;
+    if (services.length === 0) {
+      wrap.innerHTML = '<div class="empty-state"><span class="empty-ico">⇄</span><p>还没有代理服务，点击右上角新增。</p></div>';
+      return;
+    }
+    wrap.innerHTML = `
+      <table class="data">
+        <thead><tr><th>Slug</th><th>名称</th><th>上游地址</th><th>缓存</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+        <tbody>
+          ${services.map((s) => `
+            <tr>
+              <td class="mono">${esc(s.slug)}</td>
+              <td class="td-title" title="${esc(s.description || '')}">${esc(s.name || s.slug)}</td>
+              <td class="td-muted mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(s.url)}</td>
+              <td class="td-muted">${s.cacheTtl > 0 ? `${s.cacheTtl}s` : '关闭'}</td>
+              <td>${s.enabled === false ? '<span class="td-muted">已停用</span>' : '<span class="tag tag-pin">运行中</span>'}</td>
+              <td class="td-actions">
+                <button class="btn btn-sm proxy-test" data-slug="${esc(s.slug)}">测试</button>
+                <button class="btn btn-sm proxy-edit" data-slug="${esc(s.slug)}">编辑</button>
+                <button class="btn btn-sm btn-danger proxy-del" data-slug="${esc(s.slug)}">删除</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+    $$('.proxy-test', wrap).forEach((b) => b.addEventListener('click', async (e) => {
+      const slug = e.target.dataset.slug;
+      try {
+        const res = await fetch(`/api/v1/proxy/${encodeURIComponent(slug)}`, {
+          headers: { authorization: `Bearer ${state.token}` },
+        });
+        const payload = await res.json().catch(() => ({}));
+        openModal({
+          title: `测试：${slug}`,
+          wide: true,
+          hideFooter: true,
+          bodyHTML: `
+            <p class="td-muted" style="margin-bottom:10px">HTTP ${res.status} ｜ code=${payload.code ?? '—'} ｜ ${esc(payload.message || '')}</p>
+            <pre class="key-reveal" style="max-height:380px;overflow:auto">${esc(JSON.stringify(payload.data ?? payload, null, 2))}</pre>
+            <div style="margin-top:12px"><button class="btn" id="close-test">关闭</button></div>`,
+        });
+        $('#close-test').addEventListener('click', closeModal);
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    }));
+    $$('.proxy-edit', wrap).forEach((b) => b.addEventListener('click', async (e) => {
+      const slug = e.target.dataset.slug;
+      const svc = services.find((s) => s.slug === slug);
+      if (svc) proxyFormModal(svc);
+    }));
+    $$('.proxy-del', wrap).forEach((b) => b.addEventListener('click', (e) => {
+      const slug = e.target.dataset.slug;
+      confirmModal(`确定删除代理服务「${esc(slug)}」吗？`, async () => {
+        await api('/proxy', 'POST', { action: 'delete', slug });
+        toast('代理服务已删除');
+        loadProxyServices();
+      });
+    }));
+  } catch (err) {
+    wrap.innerHTML = `<div class="empty-state"><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+function proxyFormModal(service) {
+  const editing = !!service;
+  openModal({
+    title: editing ? `编辑代理服务：${service.slug}` : '新增代理服务',
+    wide: true,
+    submitLabel: '保存',
+    bodyHTML: `
+      <div class="field" style="display:grid;grid-template-columns:1fr 2fr;gap:12px">
+        <div><label for="p-slug">Slug（路由标识）</label>
+          <input id="p-slug" ${editing ? 'disabled' : ''} required pattern="[a-z0-9][a-z0-9-]{0,63}" value="${esc(service?.slug || '')}" placeholder="如 yujin-wenan"></div>
+        <div><label for="p-name">名称</label>
+          <input id="p-name" maxlength="80" value="${esc(service?.name || '')}" placeholder="如 雨瑾云 · 随机文案"></div>
+      </div>
+      <div class="field"><label for="p-url">上游地址（必须 https）</label>
+        <input id="p-url" class="mono" required value="${esc(service?.url || 'https://api.yujin.cn/')}" placeholder="https://api.yujin.cn/xxx"></div>
+      <div class="field" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+        <div><label for="p-method">方法</label>
+          <select id="p-method">
+            <option value="GET" ${service?.method !== 'POST' ? 'selected' : ''}>GET</option>
+            <option value="POST" ${service?.method === 'POST' ? 'selected' : ''}>POST</option>
+          </select></div>
+        <div><label for="p-cache">KV 缓存秒数（0=关闭）</label>
+          <input id="p-cache" type="number" min="0" max="86400" value="${service?.cacheTtl ?? 0}"></div>
+        <div><label for="p-timeout">上游超时（毫秒）</label>
+          <input id="p-timeout" type="number" min="1000" max="20000" step="500" value="${service?.timeoutMs ?? 8000}"></div>
+      </div>
+      <div class="field"><label for="p-desc">描述</label>
+        <input id="p-desc" maxlength="300" value="${esc(service?.description || '')}" placeholder="可选"></div>
+      <div class="field"><label style="display:flex;align-items:center;gap:8px">
+        <input id="p-enabled" type="checkbox" style="width:auto" ${service?.enabled !== false ? 'checked' : ''}> 启用该代理服务</label></div>`,
+    onSubmit: async (mask) => {
+      const payload = {
+        slug: $('#p-slug', mask).value.trim(),
+        name: $('#p-name', mask).value.trim(),
+        url: $('#p-url', mask).value.trim(),
+        method: $('#p-method', mask).value,
+        cacheTtl: Number($('#p-cache', mask).value) || 0,
+        timeoutMs: Number($('#p-timeout', mask).value) || 8000,
+        description: $('#p-desc', mask).value.trim(),
+        enabled: $('#p-enabled', mask).checked,
+      };
+      await api('/proxy', 'POST', payload);
+      toast('代理服务已保存');
+      closeModal();
+      loadProxyServices();
+    },
+  });
+}
+
+/* ---------- 视图：媒体库 ---------- */
+async function renderMedia() {
+  const view = $('#view');
+  view.innerHTML = `
+    <div class="card-panel">
+      <div class="panel-head">
+        <input type="file" id="media-file" style="display:none" multiple>
+        <button class="btn btn-gold" id="btn-upload">＋ 上传文件（≤5MB）</button>
+        <div class="spacer"></div>
+        <span class="td-muted">存储于 R2（免费额度 10GB），经 Functions 分发，可防盗链</span>
+      </div>
+      <div id="media-wrap"></div>
+    </div>`;
+  $('#btn-upload').addEventListener('click', () => $('#media-file').click());
+  $('#media-file').addEventListener('change', uploadMediaFiles);
+  loadMedia();
+}
+
+async function uploadMediaFiles(e) {
+  const files = [...(e.target.files || [])];
+  e.target.value = '';
+  for (const file of files) {
+    if (file.size > 5 * 1024 * 1024) {
+      toast(`「${file.name}」超过 5MB，已跳过`, 'error');
+      continue;
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      await api('/media', 'POST', {
+        name: file.name,
+        contentType: file.type || 'application/octet-stream',
+        base64: String(dataUrl).split(',')[1],
+      });
+      toast(`「${file.name}」上传成功`);
+    } catch (err) {
+      toast(`「${file.name}」上传失败：${err.message}`, 'error');
+    }
+  }
+  loadMedia();
+}
+
+async function loadMedia() {
+  const wrap = $('#media-wrap');
+  if (!wrap) return;
+  try {
+    const res = await api('/media');
+    const files = res.data.files;
+    if (files.length === 0) {
+      wrap.innerHTML = '<div class="empty-state"><span class="empty-ico">▣</span><p>媒体库为空。上传图片或文件后即可获得分发链接。</p></div>';
+      return;
+    }
+    const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`);
+    wrap.innerHTML = `
+      <table class="data">
+        <thead><tr><th>预览</th><th>文件名</th><th>类型</th><th>大小</th><th>上传时间</th><th style="text-align:right">操作</th></tr></thead>
+        <tbody>
+          ${files.map((f) => {
+            const url = `/api/v1/media/${encodeURIComponent(f.id)}`;
+            const isImage = /^image\//.test(f.contentType);
+            return `<tr>
+              <td>${isImage ? `<img src="${url}" alt="${esc(f.name)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">` : '<span class="td-muted">—</span>'}</td>
+              <td class="td-title" title="${esc(f.name)}">${esc(f.name)}</td>
+              <td class="td-muted mono">${esc(f.contentType)}</td>
+              <td class="td-muted">${fmtSize(f.size)}</td>
+              <td class="td-muted">${fmtTime(f.createdAt)}</td>
+              <td class="td-actions">
+                <button class="btn btn-sm media-copy" data-url="${esc(url)}">复制链接</button>
+                <button class="btn btn-sm btn-danger media-del" data-id="${esc(f.id)}" data-name="${esc(f.name)}">删除</button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+    $$('.media-copy', wrap).forEach((b) => b.addEventListener('click', (e) => copyText(location.origin + e.target.dataset.url)));
+    $$('.media-del', wrap).forEach((b) => b.addEventListener('click', (e) => {
+      const { id, name } = e.target.dataset;
+      confirmModal(`确定删除文件「${esc(name)}」吗？`, async () => {
+        await api('/media', 'POST', { action: 'delete', id });
+        toast('文件已删除');
+        loadMedia();
+      });
+    }));
+  } catch (err) {
+    wrap.innerHTML = `<div class="empty-state"><p>${esc(err.message)}</p></div>`;
+  }
+}
+
 /* ---------- 视图：API 密钥 ---------- */
 async function renderKeys() {
   const view = $('#view');
   view.innerHTML = `
     <div class="card-panel">
       <div class="panel-head">
-        <div style="display:flex;gap:10px;align-items:center;flex:1;max-width:420px">
+        <div style="display:flex;gap:10px;align-items:center;flex:1;max-width:560px">
           <input class="search-input" id="key-name" placeholder="密钥用途备注，如：小程序端" style="flex:1">
+          <input class="search-input" id="key-quota" type="number" min="0" placeholder="每日配额（0=不限）" style="width:170px">
           <button class="btn btn-gold" id="btn-create-key">＋ 创建密钥</button>
         </div>
         <div class="spacer"></div>
@@ -607,12 +889,13 @@ async function loadKeys() {
     }
     wrap.innerHTML = `
       <table class="data">
-        <thead><tr><th>密钥（脱敏）</th><th>备注</th><th>创建时间</th><th style="text-align:right">操作</th></tr></thead>
+        <thead><tr><th>密钥（脱敏）</th><th>备注</th><th>每日配额</th><th>创建时间</th><th style="text-align:right">操作</th></tr></thead>
         <tbody>
           ${keys.map((k) => `
             <tr>
               <td class="mono">${esc(k.masked || maskOf(k.key))}</td>
               <td>${esc(k.name || '—')}</td>
+              <td class="td-muted">${k.dailyQuota > 0 ? `${k.dailyQuota} 次/天` : '不限'}</td>
               <td class="td-muted">${fmtTime(k.createdAt)}</td>
               <td class="td-actions">
                 <button class="btn btn-sm key-copy" data-key="${esc(k.key)}">复制</button>
@@ -648,8 +931,9 @@ function maskOf(key) {
 
 async function createKey() {
   const name = $('#key-name')?.value.trim() || '未命名应用';
+  const dailyQuota = Math.max(0, Number($('#key-quota')?.value) || 0);
   try {
-    const res = await api('/keys', 'POST', { name });
+    const res = await api('/keys', 'POST', { name, dailyQuota });
     const fullKey = res.data.key;
     openModal({
       title: '密钥创建成功',

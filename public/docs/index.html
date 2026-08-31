@@ -64,6 +64,8 @@
       <a href="#base">Base URL 与认证</a>
       <a href="#daily-card" class="h">对外接口</a>
       <a href="#daily-card">每日知识卡片</a>
+      <a href="#proxy">代理转发</a>
+      <a href="#media">媒体文件</a>
       <a href="#health">健康检查</a>
       <a href="#admin-api" class="h">管理接口</a>
       <a href="#admin-overview">认证与端点清单</a>
@@ -120,6 +122,49 @@
       <div class="callout">管理后台可为指定日期「排期」固定卡片；未排期的日期按日期哈希在卡片库中自动轮换；卡片库为空时返回内置卡片，接口永不为空。</div>
     </div>
 
+    <h2 id="proxy">代理转发<span class="badge">对外 · 需密钥</span></h2>
+    <div class="endpoint-card">
+      <p><span class="method m-get">GET</span><span class="ep">/api/v1/proxy/{slug}</span></p>
+      <p>把请求转发到后台配置的第三方上游接口（如 <code class="inline">api.yujin.cn</code>），JSON 结果包装为 MoonAPI 统一信封（二创转发）；二进制结果（图片等）直接透传流。</p>
+      <h3>说明</h3>
+      <table>
+        <tr><th>项</th><th>值</th></tr>
+        <tr><td>可用服务</td><td>在 <a href="/admin/">管理后台</a> →「代理服务」中查看与配置，无需重新部署</td></tr>
+        <tr><td>查询参数</td><td>调用方携带的查询参数会原样透传给上游</td></tr>
+        <tr><td>管理员调试</td><td>该接口同时接受管理员令牌，便于后台「测试」按钮直接联调</td></tr>
+        <tr><td>缓存</td><td>按服务配置的秒数在 KV 中缓存 JSON 响应（命中时 <code class="inline">message: success (cache)</code>）</td></tr>
+      </table>
+      <h3>成功响应 <code class="inline">200</code>（JSON 上游）</h3>
+<pre>{
+  "code": 0,
+  "message": "success",
+  "requestId": "…",
+  "data": {
+    "slug": "yujin-root",
+    "name": "雨瑾云 · 站点首页",
+    "source": "api.yujin.cn",
+    "fetchedAt": "2026-09-01T12:00:00.000Z",
+    "upstreamStatus": 200,
+    "upstream": { <span class="c">/* 上游原始 JSON */</span> }
+  }
+}</pre>
+      <h3>相关错误</h3>
+      <table>
+        <tr><th>code</th><th>HTTP</th><th>含义</th></tr>
+        <tr><td class="mono">40403</td><td>404</td><td>slug 对应的代理服务不存在</td></tr>
+        <tr><td class="mono">40303</td><td>403</td><td>代理服务已被管理员停用</td></tr>
+        <tr><td class="mono">50201 / 50401</td><td>502 / 504</td><td>上游请求失败 / 超时</td></tr>
+      </table>
+    </div>
+
+    <h2 id="media">媒体文件<span class="badge">对外 · 公开</span></h2>
+    <div class="endpoint-card">
+      <p><span class="method m-get">GET</span><span class="ep">/api/v1/media/{id}</span></p>
+      <p>分发存储在 R2 中的媒体文件（图片等）。文件由管理后台「媒体库」上传，链接形如
+      <code class="inline">https://api.lunor.top/api/v1/media/&lt;uuid&gt;</code>，可直接用于
+      <code class="inline">&lt;img src&gt;</code>。响应带 24 小时浏览器缓存头。</p>
+    </div>
+
     <h2 id="health">健康检查<span class="badge">公开</span></h2>
     <div class="endpoint-card">
       <p><span class="method m-get">GET</span><span class="ep">/api/health</span></p>
@@ -139,9 +184,15 @@
       <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/cards/batch-delete</td><td>批量删除，请求体 <code class="inline">{"ids":[…]}</code></td></tr>
       <tr><td><span class="method m-get">GET</span></td><td class="mono">/api/admin/daily</td><td>排期列表</td></tr>
       <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/daily</td><td>设置排期 <code class="inline">{"date":"YYYY-MM-DD","cardId":"…"}</code>；<code class="inline">cardId</code> 为 <code class="inline">null</code> 表示清除</td></tr>
-      <tr><td><span class="method m-get">GET</span></td><td class="mono">/api/admin/keys</td><td>API 密钥列表</td></tr>
-      <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/keys</td><td>创建密钥 <code class="inline">{"name":"备注"}</code>；吊销 <code class="inline">{"action":"revoke","key":"…"}</code></td></tr>
+      <tr><td><span class="method m-get">GET</span></td><td class="mono">/api/admin/keys</td><td>API 密钥列表（含每日配额）</td></tr>
+      <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/keys</td><td>创建密钥 <code class="inline">{"name":"备注","dailyQuota":0}</code>（0=不限）；吊销 <code class="inline">{"action":"revoke","key":"…"}</code></td></tr>
+      <tr><td><span class="method m-get">GET</span></td><td class="mono">/api/admin/proxy</td><td>代理服务列表</td></tr>
+      <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/proxy</td><td>新增/更新代理服务 <code class="inline">{slug,name,url,method,cacheTtl,timeoutMs,enabled}</code>；删除 <code class="inline">{"action":"delete","slug":"…"}</code></td></tr>
+      <tr><td><span class="method m-get">GET</span></td><td class="mono">/api/admin/media</td><td>媒体文件列表</td></tr>
+      <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/media</td><td>上传 <code class="inline">{name,contentType,base64}</code>（≤5MB）；删除 <code class="inline">{"action":"delete","id":"…"}</code></td></tr>
+      <tr><td><span class="method m-get">GET</span></td><td class="mono">/api/admin/stats?days=7</td><td>用量统计（近 N 天调用量、按键/接口分布、资源汇总）</td></tr>
     </table>
+    <div class="callout">设置过 <code class="inline">dailyQuota</code> 的密钥，在每日卡片与代理接口上按北京时间自然日限流，超限返回 <code class="inline">42901</code>（HTTP 429）。</div>
     <h3>卡片字段</h3>
     <table>
       <tr><th>字段</th><th>必填</th><th>说明</th></tr>
@@ -168,6 +219,12 @@
       <tr><td class="mono">40302</td><td>403</td><td>API Key 已被吊销</td></tr>
       <tr><td class="mono">40401</td><td>404</td><td>卡片不存在</td></tr>
       <tr><td class="mono">40901</td><td>409</td><td>管理员已初始化，禁止重复 setup</td></tr>
+      <tr><td class="mono">40303</td><td>403</td><td>代理服务已停用</td></tr>
+      <tr><td class="mono">40402 / 40403 / 40404</td><td>404</td><td>密钥不存在 / 代理服务不存在 / 媒体文件不存在</td></tr>
+      <tr><td class="mono">40007–40013</td><td>400</td><td>slug 非法 / 上游地址非法 / method 不支持 / 上传内容缺失或非法等</td></tr>
+      <tr><td class="mono">41301</td><td>413</td><td>媒体文件超过 5MB 上限</td></tr>
+      <tr><td class="mono">42901</td><td>429</td><td>API Key 已达每日配额</td></tr>
+      <tr><td class="mono">50201 / 50401</td><td>502 / 504</td><td>上游接口请求失败 / 超时</td></tr>
       <tr><td class="mono">50301</td><td>503</td><td>管理员未初始化，需先调用 setup</td></tr>
     </table>
 
