@@ -59,6 +59,15 @@ export async function onRequest(context) {
   if (callerKey) recordUsage(env, waitUntil, callerKey, `proxy:${slug}`);
 
   if (result.type === 'binary') {
+    if (result.status >= 400) {
+      const preview = new TextDecoder().decode(result.body.slice(0, 600)).replace(/\s+/g, ' ').trim();
+      return json({
+        code: 50202,
+        message: `上游返回 HTTP ${result.status}（可能被上游防火墙拦截或接口路径错误）`,
+        data: { slug, upstreamStatus: result.status, upstreamContentType: result.contentType, preview },
+        requestId: crypto.randomUUID(),
+      }, result.status >= 500 ? 502 : result.status);
+    }
     return new Response(result.body, {
       status: result.status,
       headers: {

@@ -39,6 +39,15 @@ export async function onRequestPost({ request, env }) {
   const method = String(body?.method || 'GET').toUpperCase();
   if (!['GET', 'POST'].includes(method)) return fail(40011, 'method 仅支持 GET 或 POST', 400);
 
+  let headers;
+  if (body?.headers && typeof body.headers === 'object' && !Array.isArray(body.headers)) {
+    headers = {};
+    for (const [k, v] of Object.entries(body.headers).slice(0, 10)) {
+      const key = String(k).trim().toLowerCase();
+      if (key) headers[key] = String(v);
+    }
+  }
+
   const service = await saveProxyService(env, slug, {
     name: String(body?.name || slug).slice(0, 80),
     description: String(body?.description || '').slice(0, 300),
@@ -47,6 +56,7 @@ export async function onRequestPost({ request, env }) {
     enabled: body?.enabled !== false,
     cacheTtl: Math.max(0, Math.min(86400, Number(body?.cacheTtl) || 0)),
     timeoutMs: Math.max(1000, Math.min(20000, Number(body?.timeoutMs) || 8000)),
+    ...(headers ? { headers } : {}),
   });
   return ok({ slug, ...service }, { message: '代理服务已保存' });
 }
