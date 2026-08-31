@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MoonAPI 控制台</title>
+<link rel="stylesheet" href="./style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%23e0b64a'/><circle cx='64' cy='42' r='34' fill='%230d1321'/></svg>">
+</head>
+<body>
+
+<!-- 登录 / 初始化屏 -->
+<div id="auth-screen" class="auth-screen" hidden>
+  <div class="starfield" aria-hidden="true"></div>
+  <div class="moon-orb" aria-hidden="true"></div>
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="auth-logo" aria-hidden="true">☾</span>
+      <h1>MoonAPI 控制台</h1>
+      <p class="auth-sub">每日知识卡片 · 接口管理中台</p>
+    </div>
+    <form id="auth-form" autocomplete="off">
+      <label id="auth-label" for="auth-token">管理员令牌</label>
+      <input id="auth-token" type="password" minlength="8" required placeholder="输入管理员令牌">
+      <button type="submit" class="btn btn-primary btn-block" id="auth-submit">登 录</button>
+    </form>
+    <p class="auth-hint" id="auth-hint"></p>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="app-screen" class="app-screen" hidden>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">☾</span>
+      <div class="brand-text">
+        <strong>MoonAPI</strong>
+        <small>接口管理中台</small>
+      </div>
+    </div>
+    <nav class="nav" aria-label="主导航">
+      <a href="#/cards" data-nav="cards"><span class="nav-ico" aria-hidden="true">❖</span>知识卡片</a>
+      <a href="#/daily" data-nav="daily"><span class="nav-ico" aria-hidden="true">☀</span>每日排期</a>
+      <a href="#/keys" data-nav="keys"><span class="nav-ico" aria-hidden="true">⚿</span>API 密钥</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="stat-line" id="stat-cards">卡片 —</div>
+      <div class="stat-line" id="stat-keys">密钥 —</div>
+      <button class="link-btn" id="logout-btn">退出登录</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h2 id="view-title">知识卡片</h2>
+        <p id="view-desc"></p>
+      </div>
+      <div class="topbar-date" id="topbar-date"></div>
+    </header>
+    <section id="view" class="view" aria-live="polite"></section>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root" class="toast-root" aria-live="assertive"></div>
+
+<script src="./app.js"></script>
+</body>
+</html>
