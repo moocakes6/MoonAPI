@@ -1,13 +1,28 @@
 import { ok, fail, optionsResponse } from '../../_utils/http.js';
 import { verifyAdmin } from '../../_utils/auth.js';
-import { getCardIndex, saveCardIndex, putCard, getCard, normalizeCard } from '../../_utils/cards.js';
+import { getCardIndex, readMeta, writeMeta } from '../../_utils/cards.js';
+import { importCards, seedLibrary } from '../../_utils/seed.js';
+
+const SEED_FLAG_KEY = 'meta/seed-applied.json';
 
 export const onRequestOptions = () => optionsResponse();
 
 export async function onRequestGet({ request, env }) {
   const auth = await verifyAdmin(env, request);
   if (!auth.ok) return auth.response;
-  const index = await getCardIndex(env);
+
+  let index = await getCardIndex(env);
+  const seeded = await readMeta(env, SEED_FLAG_KEY, null);
+
+  // 首次使用：卡片库为空且未导入过内置资料库时，自动导入 342 条内置卡片
+  if (index.length === 0 && !seeded?.applied) {
+    try {
+      const result = await seedLibrary(env, request);
+      await writeMeta(env, SEED_FLAG_KEY, { applied: true, count: result.created, at: new Date().toISOString() });
+      index = await getCardIndex(env);
+    } catch {}
+  }
+
   index.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
   return ok({ total: index.length, cards: index });
 }
@@ -25,24 +40,6 @@ export async function onRequestPost({ request, env }) {
   const items = Array.isArray(body?.cards) ? body.cards : [body];
   if (items.length === 0 || items.length > 500) return fail(40003, '单次批量导入需在 1-500 条之间', 400);
 
-  const now = new Date().toISOString();
-  const index = await getCardIndex(env);
-  const created = [];
-  const skipped = [];
-
-  for (const item of items) {
-    const clean = normalizeCard(item);
-    if (!clean) {
-      skipped.push({ title: String(item?.title || '(无标题)'), reason: '缺少 title 或 content' });
-      continue;
-    }
-    const id = crypto.randomUUID();
-    const card = { id, ...clean, createdAt: now, updatedAt: now };
-    await putCard(env, card);
-    index.push({ id, title: clean.title, category: clean.category, updatedAt: now });
-    created.push({ id, title: clean.title });
-  }
-
-  await saveCardIndex(env, index);
-  return ok({ created: created.length, skipped: skipped.length, cards: created, skippedDetail: skipped });
+  const result = await importCards(env, items);
+  return ok(result);
 }
