@@ -243,6 +243,7 @@ const VIEWS = {
   cards: { title: '知识卡片', desc: '管理每日知识卡片库：新增、批量导入、编辑与删除', render: renderCards },
   daily: { title: '每日排期', desc: '指定某一天固定返回某张卡片，未排期的日子自动轮换', render: renderDaily },
   proxy: { title: '代理服务', desc: '配置第三方接口转发（如 api.yujin.cn），无需重新部署即可增删上游', render: renderProxy },
+  playground: { title: '试调用', desc: '在线发起真实调用：可视化调用过程、服务端阶段计时与调用明细记录', render: renderPlayground },
   media: { title: '媒体库', desc: '上传文件到 R2，通过 /api/v1/media/{id} 对外分发', render: renderMedia },
   keys: { title: 'API 密钥', desc: '创建与吊销对外接口的访问密钥，可设置每日配额', render: renderKeys },
 };
@@ -977,6 +978,663 @@ async function createKey() {
   }
 }
 
+/* ---------- 视图：试调用（调用台 + 调用记录） ---------- */
+
+const pg = {
+  tab: 'console',
+  services: [],
+  target: '__daily__', // '__daily__' 或代理服务 slug
+  customSlug: false,
+  params: [{ k: '', v: '' }],
+  date: todayCN(),
+  authMode: 'admin', // admin | key | none
+  apiKey: sessionStorage.getItem('moonapi_test_key') || '',
+  postBody: '',
+  sending: false,
+  resp: null,
+  logEntry: null,
+  filters: { days: 7, route: '', slug: '', status: '' },
+  auto: false,
+  autoTimer: null,
+  logs: null,
+  logSummary: null,
+  retentionDays: 30,
+};
+
+function fmtTimeSec(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+async function renderPlayground() {
+  const view = $('#view');
+  view.innerHTML = `
+    <div class="pg-tabs" role="tablist" aria-label="试调用子页">
+      <button class="pg-tab ${pg.tab === 'console' ? 'active' : ''}" data-tab="console" role="tab" aria-selected="${pg.tab === 'console'}">调用台</button>
+      <button class="pg-tab ${pg.tab === 'logs' ? 'active' : ''}" data-tab="logs" role="tab" aria-selected="${pg.tab === 'logs'}">调用记录</button>
+      <div class="spacer"></div>
+      <span class="pg-origin mono" title="当前服务地址">${esc(location.origin)}</span>
+    </div>
+    <div id="pg-body"></div>`;
+  $$('.pg-tab', view).forEach((b) => b.addEventListener('click', () => {
+    pg.tab = b.dataset.tab;
+    $$('.pg-tab', view).forEach((x) => {
+      x.classList.toggle('active', x === b);
+      x.setAttribute('aria-selected', x === b ? 'true' : 'false');
+    });
+    if (pg.tab === 'console') renderPgConsole();
+    else renderPgLogs();
+  }));
+  if (pg.services.length === 0) {
+    try {
+      const res = await api('/proxy');
+      pg.services = res.data.services || [];
+    } catch { pg.services = []; }
+  }
+  if (pg.tab === 'console') renderPgConsole();
+  else renderPgLogs();
+}
+
+/* ----- 调用台 ----- */
+
+function pgParamRow(p, i) {
+  return `<div class="pg-param-row" data-i="${i}">
+    <input class="pg-pk" value="${esc(p.k)}" placeholder="参数名" aria-label="参数名">
+    <input class="pg-pv" value="${esc(p.v)}" placeholder="值（原样透传上游）" aria-label="参数值">
+    <button type="button" class="btn btn-sm pg-pdel" title="删除该参数">✕</button>
+  </div>`;
+}
+
+function buildPgQuery() {
+  const sp = new URLSearchParams();
+  for (const p of pg.params) {
+    if (String(p.k).trim()) sp.set(String(p.k).trim(), String(p.v));
+  }
+  return sp.toString();
+}
+
+function pgTargetInfo() {
+  const isDaily = pg.target === '__daily__';
+  const svc = pg.services.find((s) => s.slug === pg.target) || null;
+  return {
+    isDaily,
+    svc,
+    method: isDaily ? 'GET' : (svc?.method || 'GET'),
+    path: isDaily ? '/api/v1/daily-card' : `/api/v1/proxy/${pg.target}`,
+  };
+}
+
+function updatePgUrl() {
+  const { isDaily, method, path } = pgTargetInfo();
+  const qs = isDaily ? (pg.date ? `date=${encodeURIComponent(pg.date)}` : '') : buildPgQuery();
+  const line = $('#pg-url');
+  if (line) line.textContent = `${path}${qs ? `?${qs}` : ''}`;
+  const chip = $('.pg-method');
+  if (chip) {
+    chip.textContent = method;
+    chip.className = `pg-method m-${method.toLowerCase()}`;
+  }
+}
+
+function renderPgConsole() {
+  const body = $('#pg-body');
+  if (!body) return;
+  const { isDaily, svc, method } = pgTargetInfo();
+  body.innerHTML = `
+    <div class="pg-grid">
+      <section class="card-panel pg-panel" aria-label="请求构建">
+        <div class="pg-panel-head">
+          <strong>请求构建</strong>
+          <span class="td-muted">真实调用 · 计入用量统计并写入调用日志</span>
+        </div>
+        <div class="pg-panel-body">
+          <div class="field">
+            <label for="pg-target">调用目标</label>
+            <select id="pg-target">
+              <option value="__daily__">每日知识卡片 · /api/v1/daily-card</option>
+              ${pg.services.map((s) => `<option value="${esc(s.slug)}" ${s.slug === pg.target ? 'selected' : ''}>${esc(s.name || s.slug)} · ${esc(s.slug)}${s.enabled === false ? '（已停用）' : ''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="pg-reqline" aria-label="请求地址">
+            <span class="pg-method m-${method.toLowerCase()}">${method}</span>
+            <code id="pg-url">${esc(pgTargetInfo().path)}</code>
+          </div>
+          ${isDaily ? `
+          <div class="field"><label for="pg-date">日期（默认今天）</label>
+            <input type="date" id="pg-date" value="${esc(pg.date)}"></div>` : `
+          <div class="pg-params">
+            <div class="pg-params-head"><span>查询参数（原样透传上游）</span>
+              <button type="button" class="btn btn-sm" id="pg-add-param">＋ 添加参数</button></div>
+            <div id="pg-param-rows">${pg.params.map((p, i) => pgParamRow(p, i)).join('')}</div>
+          </div>
+          ${method === 'POST' ? `
+          <div class="field"><label for="pg-postbody">请求体（POST）</label>
+            <textarea id="pg-postbody" class="mono" style="min-height:88px" placeholder='{"key": "value"}'>${esc(pg.postBody)}</textarea></div>` : ''}
+          ${!svc ? '<div class="hint td-muted">未找到该代理服务，可手动指定 slug 测试错误路径。</div>' : ''}
+          ${svc?.enabled === false ? '<div class="notice">该代理服务已停用，调用将返回 40303。</div>' : ''}
+          <div class="hint" style="margin-top:2px">
+            <button type="button" class="link-btn" id="pg-custom-slug">手动指定 slug（测试 404 / 格式校验）</button>
+          </div>
+          <div id="pg-custom-wrap" ${pg.customSlug ? '' : 'hidden'}>
+            <div class="field"><label for="pg-slug-input">slug</label>
+              <input id="pg-slug-input" class="mono" value="${esc(pg.target)}" placeholder="如 nope"></div>
+          </div>`}
+          <div class="field">
+            <label>认证方式</label>
+            <div class="pg-auth">
+              <label class="pg-auth-item"><input type="radio" name="pg-auth" value="admin" ${pg.authMode === 'admin' ? 'checked' : ''}> 管理员令牌</label>
+              <label class="pg-auth-item"><input type="radio" name="pg-auth" value="key" ${pg.authMode === 'key' ? 'checked' : ''}> API Key</label>
+              <label class="pg-auth-item"><input type="radio" name="pg-auth" value="none" ${pg.authMode === 'none' ? 'checked' : ''}> 无凭证（测 401）</label>
+            </div>
+            <div id="pg-key-wrap" ${pg.authMode === 'key' ? '' : 'hidden'}>
+              <input id="pg-key-input" class="mono" type="password" value="${esc(pg.apiKey)}" placeholder="mk_live_…" style="margin-top:8px">
+              <div class="hint">仅保存在浏览器 sessionStorage，用于真实密钥链路测试（配额、吊销等）。</div>
+            </div>
+          </div>
+          <div class="pg-actions">
+            <button class="btn btn-gold" id="pg-send">发送请求</button>
+            <button class="btn" id="pg-curl">复制 cURL</button>
+            <span class="hint td-muted">Ctrl / ⌘ + Enter</span>
+          </div>
+        </div>
+      </section>
+      <section class="card-panel pg-panel" aria-label="调用结果">
+        <div class="pg-panel-head"><strong>调用结果</strong><span class="td-muted" id="pg-resp-meta"></span></div>
+        <div class="pg-panel-body" id="pg-resp" aria-live="polite">${pgRespIdle()}</div>
+      </section>
+    </div>`;
+
+  updatePgUrl();
+  $('#pg-target').addEventListener('change', (e) => {
+    pg.target = e.target.value;
+    pg.customSlug = false;
+    renderPgConsole();
+  });
+  const dateInput = $('#pg-date');
+  if (dateInput) dateInput.addEventListener('change', (e) => { pg.date = e.target.value; updatePgUrl(); });
+  const rows = $('#pg-param-rows');
+  if (rows) {
+    const syncParams = () => {
+      $$('.pg-param-row', rows).forEach((row) => {
+        const i = Number(row.dataset.i);
+        if (!pg.params[i]) return;
+        pg.params[i].k = $('.pg-pk', row).value;
+        pg.params[i].v = $('.pg-pv', row).value;
+      });
+    };
+    rows.addEventListener('input', (e) => { syncParams(); updatePgUrl(); });
+    rows.addEventListener('click', (e) => {
+      if (!e.target.classList.contains('pg-pdel')) return;
+      syncParams();
+      const i = Number(e.target.closest('.pg-param-row').dataset.i);
+      pg.params.splice(i, 1);
+      if (pg.params.length === 0) pg.params.push({ k: '', v: '' });
+      rows.innerHTML = pg.params.map((p, j) => pgParamRow(p, j)).join('');
+      updatePgUrl();
+    });
+    $('#pg-add-param').addEventListener('click', () => {
+      syncParams();
+      pg.params.push({ k: '', v: '' });
+      rows.innerHTML = pg.params.map((p, j) => pgParamRow(p, j)).join('');
+      updatePgUrl();
+      $$('.pg-pk', rows).pop()?.focus();
+    });
+  }
+  const postbody = $('#pg-postbody');
+  if (postbody) postbody.addEventListener('input', (e) => { pg.postBody = e.target.value; });
+  const customBtn = $('#pg-custom-slug');
+  if (customBtn) customBtn.addEventListener('click', () => {
+    pg.customSlug = !pg.customSlug;
+    $('#pg-custom-wrap').hidden = !pg.customSlug;
+    if (pg.customSlug) $('#pg-slug-input').focus();
+  });
+  const slugInput = $('#pg-slug-input');
+  if (slugInput) slugInput.addEventListener('input', (e) => {
+    pg.target = e.target.value.trim().toLowerCase() || '__none__';
+    const qs = buildPgQuery();
+    $('#pg-url').textContent = `/api/v1/proxy/${pg.target}${qs ? `?${qs}` : ''}`;
+  });
+  $$('#pg-body input[name="pg-auth"]').forEach((r) => r.addEventListener('change', () => {
+    pg.authMode = document.querySelector('input[name="pg-auth"]:checked').value;
+    $('#pg-key-wrap').hidden = pg.authMode !== 'key';
+  }));
+  $('#pg-send').addEventListener('click', sendPgRequest);
+  $('#pg-curl').addEventListener('click', async () => {
+    await copyText(buildPgCurl(true));
+    toast('cURL 已复制（含真实凭证，注意保密）');
+  });
+}
+
+function pgRespIdle() {
+  return `<div class="pg-idle"><span class="pg-idle-ico" aria-hidden="true">✦</span>
+    <p>在左侧构建请求并发送。<br>这里会展示真实响应与调用阶段轨迹。</p></div>`;
+}
+
+function pgTrack(entry) {
+  const st = Array.isArray(entry?.stages) ? entry.stages : [];
+  if (st.length === 0) return '';
+  return `<div class="pg-track" role="list" aria-label="调用阶段轨迹">
+    ${st.map((s) => `
+      <div class="pg-node ${s.s === 'ok' ? 'ok' : s.s === 'fail' ? 'fail' : 'skip'}" role="listitem">
+        <div class="pg-dot" aria-hidden="true"></div>
+        <div class="pg-node-name">${esc(s.name)}</div>
+        <div class="pg-node-ms">${s.ms != null ? `${s.ms}ms` : (s.s === 'skip' ? '跳过' : '')}</div>
+        ${s.note ? `<div class="pg-node-note" title="${esc(s.note)}">${esc(s.note)}</div>` : ''}
+      </div>`).join('')}
+  </div>
+  <div class="pg-track-total mono">服务端处理 ${entry.result?.ms ?? '—'}ms${entry.upstream?.ms != null ? ` ｜ 上游 ${entry.upstream.ms}ms` : ''}${entry.result?.cache === 'hit' ? ' ｜ KV 缓存命中' : ''}</div>`;
+}
+
+function renderPgResponse() {
+  const wrap = $('#pg-resp');
+  if (!wrap) return;
+  const r = pg.resp;
+  if (!r) { wrap.innerHTML = pgRespIdle(); renderPgRespMeta(); return; }
+
+  const track = pg.logEntry
+    ? pgTrack(pg.logEntry)
+    : (r.requestId ? '<div class="pg-track-pending">正在获取服务端调用明细…</div>' : '');
+  const cls = !r.status ? 's5' : r.status < 300 ? 's2' : r.status < 400 ? 's3' : r.status < 500 ? 's4' : 's5';
+  const isImage = /^image\//i.test(r.contentType || '');
+
+  let bodyBlock = '';
+  if (r.blobUrl && isImage) {
+    bodyBlock = `<img class="pg-img" src="${r.blobUrl}" alt="上游返回的图片">
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <a class="btn btn-sm" href="${r.blobUrl}" download>下载原图</a>
+        <span class="td-muted">${fmtBytes(r.bytes)}</span>
+      </div>`;
+  } else if (r.json !== undefined && r.json !== null) {
+    let pretty = '';
+    try { pretty = JSON.stringify(r.json, null, 2); } catch { pretty = String(r.text); }
+    if (pretty.length > 20000) pretty = pretty.slice(0, 20000) + '\n…（内容过长已截断）';
+    bodyBlock = `
+      <div class="pg-bodytabs" role="tablist">
+        <button class="pg-bodytab active" data-bt="pretty" role="tab">美化 JSON</button>
+        <button class="pg-bodytab" data-bt="raw" role="tab">原始</button>
+        <button class="pg-bodytab" data-bt="headers" role="tab">响应头</button>
+      </div>
+      <pre class="pg-json" id="pg-body-view" tabindex="0">${esc(pretty)}</pre>`;
+  } else {
+    bodyBlock = `
+      <div class="pg-bodytabs" role="tablist">
+        <button class="pg-bodytab active" data-bt="raw" role="tab">响应内容</button>
+        <button class="pg-bodytab" data-bt="headers" role="tab">响应头</button>
+      </div>
+      <pre class="pg-json" id="pg-body-view" tabindex="0">${esc((r.text || '（空响应）').slice(0, 20000))}</pre>`;
+  }
+
+  wrap.innerHTML = `
+    ${track}
+    <div class="pg-resp-head">
+      <span class="pg-status ${cls}">HTTP ${r.status ?? '—'}</span>
+      ${r.code != null && r.code !== 0 ? `<span class="tag tag-err mono" title="${esc(r.message || '')}">code ${r.code}</span>` : ''}
+      <div class="pg-meta">
+        <span>客户端往返 <b>${r.msClient}ms</b></span>
+        <span>${fmtBytes(r.bytes)}</span>
+        ${r.requestId ? `<span>requestId <b class="mono">${esc(r.requestId)}</b></span>` : ''}
+      </div>
+    </div>
+    ${r.code != null && r.code !== 0 && r.message ? `<div class="pg-err">${esc(r.message)}</div>` : ''}
+    ${bodyBlock}`;
+
+  $$('.pg-bodytab', wrap).forEach((b) => b.addEventListener('click', () => {
+    $$('.pg-bodytab', wrap).forEach((x) => x.classList.toggle('active', x === b));
+    const view = $('#pg-body-view', wrap);
+    if (b.dataset.bt === 'headers') {
+      view.textContent = (r.headers || []).map(([k, v]) => `${k}: ${v}`).join('\n') || '（无响应头）';
+    } else if (b.dataset.bt === 'raw') {
+      view.textContent = (r.text || '（空响应）').slice(0, 20000);
+    } else {
+      let pretty = '';
+      try { pretty = JSON.stringify(r.json, null, 2); } catch { pretty = String(r.text || ''); }
+      view.textContent = pretty.slice(0, 20000);
+    }
+  }));
+  renderPgRespMeta();
+}
+
+function fmtBytes(n) {
+  if (n == null) return '—';
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+function renderPgRespMeta() {
+  const el = $('#pg-resp-meta');
+  if (!el) return;
+  el.textContent = pg.resp
+    ? (pg.logEntry ? `调用明细已归档 · ${pg.logEntry.id}` : pg.resp.requestId ? '服务端明细同步中' : '')
+    : '等待调用';
+}
+
+function buildPgCurl(real) {
+  const { isDaily, svc, method, path } = pgTargetInfo();
+  const qs = isDaily ? (pg.date ? `date=${encodeURIComponent(pg.date)}` : '') : buildPgQuery();
+  const auth = pg.authMode === 'admin' ? state.token : pg.authMode === 'key' ? pg.apiKey : '';
+  const shown = real ? auth : '<令牌或API_KEY>';
+  let cmd = 'curl';
+  if (auth) cmd += ` -H "Authorization: Bearer ${shown}"`;
+  if (method === 'POST') {
+    cmd += ' -X POST';
+    const bodyText = (pg.postBody || '').trim();
+    if (bodyText) cmd += ` -H "content-type: application/json" -d '${bodyText.replace(/'/g, "'\\''")}'`;
+  }
+  cmd += ` "${location.origin}${path}${qs ? `?${qs}` : ''}"`;
+  if (!isDaily && svc?.enabled === false) cmd += '  # 该服务已停用，将返回 40303';
+  return cmd;
+}
+
+async function sendPgRequest() {
+  if (pg.sending) return;
+  const isDaily = pg.target === '__daily__';
+  const { svc, method, path: basePath } = pgTargetInfo();
+  const slugInput = $('#pg-slug-input');
+  const path = !isDaily && pg.customSlug && slugInput
+    ? `/api/v1/proxy/${slugInput.value.trim().toLowerCase()}`
+    : basePath;
+  const qs = isDaily ? (pg.date ? `date=${encodeURIComponent(pg.date)}` : '') : buildPgQuery();
+  const url = `${path}${qs ? `?${qs}` : ''}`;
+
+  const headers = {};
+  if (pg.authMode === 'admin') {
+    headers.authorization = `Bearer ${state.token}`;
+  } else if (pg.authMode === 'key') {
+    const k = ($('#pg-key-input')?.value || pg.apiKey || '').trim();
+    if (!k) { toast('请先填入 API Key', 'error'); return; }
+    pg.apiKey = k;
+    sessionStorage.setItem('moonapi_test_key', k);
+    headers.authorization = `Bearer ${k}`;
+  }
+
+  const init = { method, headers };
+  if (method === 'POST' && !isDaily) {
+    const bodyText = ($('#pg-postbody')?.value || '').trim();
+    if (bodyText) {
+      init.body = bodyText;
+      headers['content-type'] = /^[[{]/.test(bodyText) ? 'application/json' : 'text/plain';
+    }
+  }
+
+  pg.sending = true;
+  const btn = $('#pg-send');
+  if (btn) { btn.disabled = true; btn.textContent = '调用中…'; }
+  const t0 = performance.now();
+  try {
+    const res = await fetch(url, init);
+    const msClient = Math.round(performance.now() - t0);
+    const ct = res.headers.get('content-type') || '';
+    const payload = {
+      status: res.status, ok: res.ok, contentType: ct, msClient,
+      headers: [...res.headers.entries()], text: '', blobUrl: null,
+      requestId: null, code: null, message: null, json: undefined, bytes: null,
+    };
+    if (/^image\//i.test(ct) || /octet-stream/i.test(ct)) {
+      const blob = await res.blob();
+      payload.blobUrl = URL.createObjectURL(blob);
+      payload.bytes = blob.size;
+    } else {
+      payload.text = await res.text();
+      payload.bytes = payload.text.length;
+      try {
+        const j = JSON.parse(payload.text);
+        payload.json = j;
+        payload.code = j?.code ?? null;
+        payload.requestId = j?.requestId ?? null;
+        payload.message = j?.message ?? null;
+      } catch { /* 非 JSON 响应 */ }
+    }
+    pg.resp = payload;
+    pg.logEntry = null;
+    renderPgResponse();
+    if (payload.requestId && pg.authMode !== 'none') pollPgLog(payload.requestId);
+    else renderPgRespMeta();
+  } catch (err) {
+    toast(err.message || '网络错误，调用未到达服务端', 'error');
+  } finally {
+    pg.sending = false;
+    const b = $('#pg-send');
+    if (b) { b.disabled = false; b.textContent = '发送请求'; }
+  }
+}
+
+async function pollPgLog(requestId) {
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, i === 0 ? 400 : 900));
+    if (pg.tab !== 'console' || !$('#pg-resp')) return;
+    try {
+      const res = await api(`/logs?days=1&limit=10&requestId=${encodeURIComponent(requestId)}`);
+      const hit = (res.data.entries || []).find((e) => e.requestId === requestId);
+      if (hit) {
+        pg.logEntry = hit;
+        renderPgResponse();
+        return;
+      }
+    } catch { /* 明细拉取失败不影响结果展示 */ }
+  }
+  renderPgRespMeta();
+}
+
+/* ----- 调用记录 ----- */
+
+function pgCallerHtml(c) {
+  if (!c || c.type === 'anonymous') return `<span class="tag tag-err" title="${esc(c?.note || '未携带有效凭证')}">匿名</span>`;
+  if (c.type === 'admin') return '<span class="tag">管理员</span>';
+  return `<span class="tag tag-pin">${esc(c.name || 'API Key')}</span> <span class="mono td-muted">${esc(c.key || '')}</span>`;
+}
+
+function pgStatusHtml(e) {
+  const s = e.result?.status;
+  const cls = !s ? 's5' : s < 300 ? 's2' : s < 400 ? 's3' : s < 500 ? 's4' : 's5';
+  const code = e.result?.code;
+  return `<span class="pg-status ${cls}">${s ?? '—'}</span>${code != null && code !== 0 ? `<span class="tag tag-err mono" title="${esc(e.result?.error || '')}">${code}</span>` : ''}`;
+}
+
+function renderPgLogs() {
+  const body = $('#pg-body');
+  if (!body) return;
+  body.innerHTML = `
+    <div class="card-panel pg-panel">
+      <div class="pg-panel-head">
+        <strong>调用记录</strong>
+        <div class="pg-log-tools">
+          <select id="pgf-days" aria-label="时间范围">
+            ${[1, 7, 14, 30].map((d) => `<option value="${d}" ${pg.filters.days === d ? 'selected' : ''}>最近 ${d} 天</option>`).join('')}
+          </select>
+          <select id="pgf-route" aria-label="接口类型">
+            <option value="">全部类型</option>
+            <option value="proxy" ${pg.filters.route === 'proxy' ? 'selected' : ''}>代理转发</option>
+            <option value="daily-card" ${pg.filters.route === 'daily-card' ? 'selected' : ''}>每日卡片</option>
+          </select>
+          <select id="pgf-slug" aria-label="代理服务" ${pg.filters.route === 'daily-card' ? 'disabled' : ''}>
+            <option value="">全部服务</option>
+            ${pg.services.map((s) => `<option value="${esc(s.slug)}" ${pg.filters.slug === s.slug ? 'selected' : ''}>${esc(s.slug)}</option>`).join('')}
+          </select>
+          <select id="pgf-status" aria-label="结果">
+            <option value="">全部结果</option>
+            <option value="success" ${pg.filters.status === 'success' ? 'selected' : ''}>成功</option>
+            <option value="error" ${pg.filters.status === 'error' ? 'selected' : ''}>失败</option>
+          </select>
+          <label class="pg-auto"><input type="checkbox" id="pgf-auto" ${pg.auto ? 'checked' : ''}> 自动刷新</label>
+          <button class="btn btn-sm" id="pgf-refresh">刷新</button>
+          <button class="btn btn-sm btn-danger" id="pgf-clear">清理…</button>
+        </div>
+      </div>
+      <div id="pg-log-body"></div>
+    </div>`;
+
+  $('#pgf-days').addEventListener('change', (e) => { pg.filters.days = Number(e.target.value) || 7; loadPgLogs(); });
+  $('#pgf-route').addEventListener('change', (e) => {
+    pg.filters.route = e.target.value;
+    if (pg.filters.route === 'daily-card') pg.filters.slug = '';
+    $('#pgf-slug').disabled = pg.filters.route === 'daily-card';
+    loadPgLogs();
+  });
+  $('#pgf-slug').addEventListener('change', (e) => { pg.filters.slug = e.target.value; loadPgLogs(); });
+  $('#pgf-status').addEventListener('change', (e) => { pg.filters.status = e.target.value; loadPgLogs(); });
+  $('#pgf-auto').addEventListener('change', (e) => setPgAuto(e.target.checked));
+  $('#pgf-refresh').addEventListener('click', loadPgLogs);
+  $('#pgf-clear').addEventListener('click', pgClearModal);
+
+  loadPgLogs();
+  setPgAuto(pg.auto);
+}
+
+function setPgAuto(on) {
+  pg.auto = on;
+  if (pg.autoTimer) { clearInterval(pg.autoTimer); pg.autoTimer = null; }
+  if (on) {
+    pg.autoTimer = setInterval(() => {
+      if (pg.tab !== 'logs' || !$('#pg-log-body')) return;
+      loadPgLogs();
+    }, 5000);
+  }
+}
+
+async function loadPgLogs() {
+  const wrap = $('#pg-log-body');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="empty-state"><p>加载中…</p></div>';
+  const q = new URLSearchParams({ days: String(pg.filters.days), limit: '150' });
+  if (pg.filters.route) q.set('route', pg.filters.route);
+  if (pg.filters.route === 'proxy' && pg.filters.slug) q.set('slug', pg.filters.slug);
+  if (pg.filters.status) q.set('status', pg.filters.status);
+  try {
+    const res = await api(`/logs?${q}`);
+    pg.logs = res.data.entries || [];
+    pg.logSummary = res.data.summary || {};
+    pg.retentionDays = res.data.retentionDays || 30;
+    drawPgLogs();
+  } catch (err) {
+    wrap.innerHTML = `<div class="empty-state"><span class="empty-ico">✦</span><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+function drawPgLogs() {
+  const wrap = $('#pg-log-body');
+  if (!wrap) return;
+  const s = pg.logSummary || {};
+  const entries = pg.logs || [];
+  const sum = `
+    <div class="pg-sum">
+      <div class="pg-sum-item"><div class="pg-sum-v">${s.total ?? 0}</div><div class="pg-sum-l">调用次数</div></div>
+      <div class="pg-sum-item"><div class="pg-sum-v">${s.ok ?? 0}</div><div class="pg-sum-l">成功</div></div>
+      <div class="pg-sum-item ${s.error ? 'bad' : ''}"><div class="pg-sum-v">${s.error ?? 0}</div><div class="pg-sum-l">失败</div></div>
+      <div class="pg-sum-item"><div class="pg-sum-v">${s.avgMs ?? 0}<small style="font-size:.7em;color:var(--muted)">ms</small></div><div class="pg-sum-l">平均延迟</div></div>
+      <div class="pg-sum-item"><div class="pg-sum-v">${s.cacheHits ?? 0}</div><div class="pg-sum-l">缓存命中</div></div>
+    </div>`;
+
+  if (entries.length === 0) {
+    wrap.innerHTML = `${sum}<div class="empty-state"><span class="empty-ico">✦</span>
+      <p>该时间范围内没有调用记录。去「调用台」发起一次真实调用试试。</p></div>`;
+    return;
+  }
+
+  wrap.innerHTML = `${sum}
+    <table class="data">
+      <thead><tr>
+        <th>时间</th><th>接口</th><th>调用方</th><th>结果</th><th>延迟</th><th>缓存</th><th style="text-align:right">明细</th>
+      </tr></thead>
+      <tbody>
+        ${entries.map((e) => `
+          <tr data-key="${esc(e.key || '')}" style="cursor:pointer">
+            <td class="mono td-muted">${esc((e.ts || '').slice(5, 10))} ${fmtTimeSec(e.ts)}</td>
+            <td>
+              <span class="tag tag-dim">${e.route === 'proxy' ? '代理' : '卡片'}</span>
+              <span class="mono">${esc(e.route === 'proxy' ? e.slug : e.endpoint)}</span>
+            </td>
+            <td>${pgCallerHtml(e.caller)}</td>
+            <td>${pgStatusHtml(e)}${e.result?.error ? `<div class="pg-node-note" style="max-width:220px;margin:0" title="${esc(e.result.error)}">${esc(e.result.error)}</div>` : ''}</td>
+            <td class="mono">${e.result?.ms != null ? `${e.result.ms}ms` : '—'}</td>
+            <td>${e.result?.cache === 'hit' ? '<span class="tag tag-pin">KV</span>' : '<span class="td-muted">—</span>'}</td>
+            <td class="td-actions"><button class="btn btn-sm pg-detail">查看</button></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    <div class="hint td-muted" style="padding:10px 18px">明细日志保留 ${pg.retentionDays} 天，超期自动清理；单次最多返回 150 条摘要。</div>`;
+
+  $$('.pg-detail', wrap).forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPgDetail(e.target.closest('tr').dataset.key);
+  }));
+  $$('tbody tr', wrap).forEach((tr) => tr.addEventListener('click', () => openPgDetail(tr.dataset.key)));
+}
+
+async function openPgDetail(key) {
+  if (!key) return;
+  let entry = null;
+  try {
+    const res = await api(`/logs?key=${encodeURIComponent(key)}`);
+    entry = res.data.entry;
+  } catch (err) { return toast(err.message, 'error'); }
+  if (!entry) return;
+
+  const queryRows = Object.entries(entry.query || {})
+    .map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="mono">${esc(String(v))}</td></tr>`).join('');
+  openModal({
+    title: `调用明细 · ${esc(entry.id || '')}`,
+    wide: true,
+    hideFooter: true,
+    bodyHTML: `
+      ${pgTrack(entry)}
+      <div class="pg-resp-head" style="margin-top:6px">${pgStatusHtml(entry)}</div>
+      <table class="data">
+        <tbody>
+          <tr><th style="width:110px">时间</th><td class="mono">${esc(entry.ts || '')}</td></tr>
+          <tr><th>接口</th><td class="mono">${esc(entry.method || 'GET')} ${esc(entry.endpoint || '')}</td></tr>
+          <tr><th>调用方</th><td>${pgCallerHtml(entry.caller)}</td></tr>
+          <tr><th>上游</th><td class="mono">${esc(entry.upstream?.host || '—')}${entry.upstream?.status != null ? ` · HTTP ${entry.upstream.status}` : ''}${entry.upstream?.ms != null ? ` · ${entry.upstream.ms}ms` : ''}</td></tr>
+          <tr><th>耗时</th><td class="mono">服务端 ${entry.result?.ms ?? '—'}ms ｜ 字节 ${entry.result?.bytes ?? '—'} ｜ 缓存 ${esc(entry.result?.cache || '—')}</td></tr>
+          ${entry.result?.error ? `<tr><th>错误</th><td style="color:var(--danger)">${esc(entry.result.error)}</td></tr>` : ''}
+          ${entry.requestId ? `<tr><th>requestId</th><td class="mono">${esc(entry.requestId)}</td></tr>` : ''}
+          ${entry.ray ? `<tr><th>CF Ray</th><td class="mono">${esc(entry.ray)}</td></tr>` : ''}
+          ${entry.country ? `<tr><th>来源地区</th><td class="mono">${esc(entry.country)}</td></tr>` : ''}
+          ${entry.ua ? `<tr><th>UA</th><td class="mono" style="word-break:break-all">${esc(entry.ua)}</td></tr>` : ''}
+        </tbody>
+      </table>
+      ${queryRows ? `<h3 style="margin:16px 0 8px;font-size:.95rem">查询参数</h3>
+        <table class="data"><thead><tr><th>参数</th><th>值</th></tr></thead><tbody>${queryRows}</tbody></table>` : ''}
+      <details style="margin-top:14px">
+        <summary style="cursor:pointer;font-size:.85rem;color:var(--muted)">原始日志 JSON</summary>
+        <pre class="pg-json" style="margin-top:8px">${esc(JSON.stringify(entry, null, 2))}</pre>
+      </details>
+      <div style="margin-top:14px"><button class="btn" id="pg-detail-close">关闭</button></div>`,
+  });
+  $('#pg-detail-close').addEventListener('click', closeModal);
+}
+
+function pgClearModal() {
+  openModal({
+    title: '清理调用日志',
+    submitLabel: '执行清理',
+    bodyHTML: `
+      <div class="notice" style="background:#faeeec;border-color:#e5c2be;color:#7a2d25">
+        清理操作不可恢复。日志明细保留 ${pg.retentionDays} 天，超期会自动清理；这里可手动提前清理。
+      </div>
+      <div class="field"><label for="pgc-keep">保留最近多少天的日志（0 = 清空全部）</label>
+        <input id="pgc-keep" type="number" min="0" max="365" value="${pg.retentionDays}"></div>`,
+    onSubmit: async (mask) => {
+      const keepDays = Math.max(0, Math.min(365, Number($('#pgc-keep', mask).value) || 0));
+      const res = await api('/logs', 'POST', { action: 'clear', keepDays });
+      toast(res.message || '清理完成');
+      closeModal();
+      loadPgLogs();
+    },
+  });
+}
+
 /* ---------- 启动 ---------- */
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeModal(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && pg.tab === 'console') {
+    const view = location.hash.replace('#/', '').split('?')[0];
+    if (view !== 'playground') return;
+    const btn = $('#pg-send');
+    if (btn && !btn.disabled) { e.preventDefault(); sendPgRequest(); }
+  }
+});
 boot();
