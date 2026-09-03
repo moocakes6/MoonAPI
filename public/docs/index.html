@@ -178,7 +178,7 @@
       <tr><th>方法</th><th>路径</th><th>说明</th></tr>
       <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/setup</td><td>初始化管理员令牌，请求体 <code class="inline">{"token":"…"}</code>（≥8 位）</td></tr>
       <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/login</td><td>校验管理员令牌</td></tr>
-      <tr><td><span class="method m-get">GET</span></td><td class="mono">/api/admin/cards</td><td>卡片列表（索引）。首次访问且卡片库为空时，自动导入内置 342 条资料库</td></tr>
+      <tr><td><span class="method m-get">GET</span></td><td class="mono">/api/admin/cards</td><td>卡片列表（索引）。首次使用时自动分批导入内置 342 条资料库（打开后台卡片页即自动完成；完成后每日卡片跨天自动轮换）</td></tr>
       <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/cards</td><td>新增卡片（单个对象或 <code class="inline">{"cards":[…]}</code> 批量，≤500 条）</td></tr>
       <tr><td><span class="method m-get">GET</span> <span class="method m-put">PUT</span> <span class="method m-delete">DELETE</span></td><td class="mono">/api/admin/cards/{id}</td><td>读取 / 更新 / 删除单张卡片</td></tr>
       <tr><td><span class="method m-post">POST</span></td><td class="mono">/api/admin/cards/batch-delete</td><td>批量删除，请求体 <code class="inline">{"ids":[…]}</code></td></tr>

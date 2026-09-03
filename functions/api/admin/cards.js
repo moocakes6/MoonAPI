@@ -1,7 +1,7 @@
 import { ok, fail, optionsResponse } from '../../_utils/http.js';
 import { verifyAdmin } from '../../_utils/auth.js';
 import { getCardIndex, readMeta, writeMeta } from '../../_utils/cards.js';
-import { importCards, seedLibrary } from '../../_utils/seed.js';
+import { importCards, seedBatch } from '../../_utils/seed.js';
 
 const SEED_FLAG_KEY = 'meta/seed-applied.json';
 
@@ -12,19 +12,31 @@ export async function onRequestGet({ request, env }) {
   if (!auth.ok) return auth.response;
 
   let index = await getCardIndex(env);
-  const seeded = await readMeta(env, SEED_FLAG_KEY, null);
+  let seeded = await readMeta(env, SEED_FLAG_KEY, null);
 
-  // 首次使用：卡片库为空且未导入过内置资料库时，自动导入 342 条内置卡片
-  if (index.length === 0 && !seeded?.applied) {
+  // 首次使用：未导入过内置资料库时自动分批导入（342 条，每批 ≤30 条以规避单请求 50 子请求上限；
+  // 前提改为只看 applied 标记——否则「先建卡、后逛库」的时序会让惰性导入永久跳过，
+  // 卡片库只剩用户自建卡导致每日轮换失效）。后台卡片页会自动连续推进直至完成。
+  let seedJustFinished = false;
+  if (!seeded?.applied) {
     try {
-      const result = await seedLibrary(env, request);
-      await writeMeta(env, SEED_FLAG_KEY, { applied: true, count: result.created, at: new Date().toISOString() });
+      const result = await seedBatch(env, request);
+      if (result.done) {
+        await writeMeta(env, SEED_FLAG_KEY, { applied: true, count: result.progress.totalCreated, at: new Date().toISOString() });
+        seedJustFinished = true;
+      }
       index = await getCardIndex(env);
-    } catch {}
+    } catch (e) {
+      console.error('seed batch failed:', e?.message || e);
+    }
   }
 
   index.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-  return ok({ total: index.length, cards: index });
+  const seedProgress = await readMeta(env, 'meta/seed-progress.json', null);
+  const seed = (seeded?.applied || seedJustFinished)
+    ? { applied: true }
+    : { applied: false, offset: seedProgress?.offset || 0, total: seedProgress?.total || 342 };
+  return ok({ total: index.length, cards: index, seed });
 }
 
 export async function onRequestPost({ request, env }) {

@@ -300,7 +300,14 @@ async function loadCards() {
     state.cards = res.data.cards;
     state.selected.clear();
     drawCardsTable();
-    $('#stat-cards').textContent = `卡片 ${res.data.total} 张`;
+    const seed = res.data.seed;
+    if (seed && !seed.applied) {
+      // 内置资料库分批导入中：自动连续请求推进直至完成
+      $('#stat-cards').textContent = `内置资料库导入中 ${seed.offset}/${seed.total}…`;
+      setTimeout(() => { if ($('#cards-table-wrap')) loadCards(); }, 400);
+    } else {
+      $('#stat-cards').textContent = `卡片 ${res.data.total} 张`;
+    }
   } catch (err) {
     wrap.innerHTML = `<div class="empty-state"><span class="empty-ico">⚠</span><p>${esc(err.message)}</p></div>`;
   }
