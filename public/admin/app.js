@@ -3,6 +3,20 @@
 
 const API_BASE = '/api/admin';
 const TOKEN_KEY = 'moonapi_admin_token';
+const BG_KEY = 'moonapi_bg';
+const BG_THEMES = [
+  { id: 'gray', label: '月岩灰' },
+  { id: 'paper', label: '宣纸米白' },
+];
+
+/* 背景主题：启动即应用（默认月岩灰），避免闪烁 */
+function applyBgTheme(id) {
+  document.body.dataset.bg = id;
+  const t = BG_THEMES.find((x) => x.id === id) || BG_THEMES[0];
+  const btn = $('#bg-toggle');
+  if (btn) btn.textContent = `背景 · ${t.label}`;
+}
+applyBgTheme(localStorage.getItem(BG_KEY) || 'gray');
 
 const state = {
   token: localStorage.getItem(TOKEN_KEY) || '',
@@ -235,6 +249,14 @@ $('#logout-btn').addEventListener('click', () => {
   state.token = '';
   localStorage.removeItem(TOKEN_KEY);
   showAuthScreen();
+});
+
+$('#bg-toggle').addEventListener('click', () => {
+  const cur = document.body.dataset.bg || 'gray';
+  const idx = BG_THEMES.findIndex((x) => x.id === cur);
+  const next = BG_THEMES[(idx + 1) % BG_THEMES.length];
+  localStorage.setItem(BG_KEY, next.id);
+  applyBgTheme(next.id);
 });
 
 /* ---------- 路由 ---------- */
