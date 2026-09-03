@@ -13,7 +13,7 @@ const BG_THEMES = [
 function applyBgTheme(id) {
   document.body.dataset.bg = id;
   const t = BG_THEMES.find((x) => x.id === id) || BG_THEMES[0];
-  const btn = $('#bg-toggle');
+  const btn = document.getElementById('bg-toggle');
   if (btn) btn.textContent = `背景 · ${t.label}`;
 }
 applyBgTheme(localStorage.getItem(BG_KEY) || 'gray');

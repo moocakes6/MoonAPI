@@ -207,3 +207,4 @@ MoonAPI/
   ② 硬编码颜色 token 化（--field 输入框底 / --sunken 下沉容器底），保证两主题下控件底色协调。
   ③ 侧边栏底部新增「背景 · 主题名」切换按钮，循环切换两主题，选择持久化 localStorage（moonapi_bg），
   启动时优先应用（避免闪烁），body 背景带 .25s 过渡。纯前端改动，无接口变化。
+- [22:50] 热修复：applyBgTheme 启动即执行时引用未初始化的 `$`（TDZ ReferenceError），导致 admin 整页脚本崩溃白屏（两个 screen 容器默认 hidden）；改用 document.getElementById 规避依赖顺序。教训：启动期代码不得引用后置 const 工具函数，node --check 不查 TDZ。
