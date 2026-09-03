@@ -114,6 +114,8 @@ MoonAPI/
 | `meta/media-index.json` | 媒体文件索引：`[{id,name,contentType,size,createdAt},...]` |
 | `media/{id}` | 媒体文件本体（≤5MB/件，经 `/api/v1/media/{id}` 分发） |
 | `stats/{YYYY-MM-DD}.json` | 当日用量：`{total, byKey, byEndpoint}`（waitUntil 异步写入） |
+| `logs/{YYYY-MM-DD}/{HHmmss}-{ms}-{rand4}.json` | 单次调用明细（权威记录）：请求参数（敏感项掩码）、调用方、服务端分阶段计时、上游摘要、响应摘要。保留 30 天，2% 概率触发过期清理 |
+| `meta/call-log-index/{date}.json` | 当日调用日志索引：`[{key,ts,route,slug,endpoint,status,code,ms,cache,caller},...]`（列表读路径，≤1200 条/日） |
 
 **KV（绑定名 `MOONAPI_KV`）用途**：仅用于代理响应的带 TTL 缓存（`proxy:{slug}:{query}`，
 `expirationTtl` ≥ 60s）。免费额度：10 万次读/天、1000 次写/天，故缓存默认关闭，按需为单个代理服务开启。
@@ -128,7 +130,8 @@ MoonAPI/
 ### 认证约定
 
 - **对外接口**：请求头 `Authorization: Bearer <API_KEY>` 或 `X-API-Key: <API_KEY>`。
-  API Key 形如 `mk_live_xxxx`，在后台创建。
+  API Key 形如 `mk_live_xxxx`，在后台创建。每日卡片与代理接口同时接受管理员令牌回退认证
+  （便于后台「试调用」页直接联调），管理员测试不计入密钥配额。
 - **管理接口**：请求头 `Authorization: Bearer <管理员令牌>`；令牌只存哈希。
 - 所有接口返回统一信封：`{code, message, data, requestId}`；全部允许 CORS。
 
@@ -139,7 +142,7 @@ MoonAPI/
 | Phase 0 | 仓库底座：agent.md、README、Pages 部署配置 | ✅ 2026-09-01 |
 | Phase 1 | 每日知识卡片接口 + 管理后台（卡片/密钥/排期）+ /docs 文档站 | ✅ 2026-09-01（待部署验证） |
 | Phase 2 | 第三方接口代理框架（后台可配置上游、统一信封二创、KV 缓存）+ 媒体托管 + 用量统计与密钥配额 | ✅ 2026-09-01 |
-| Phase 3 | 能力增强（按需求再定：更多内置上游、图片处理、更多接口等） | ⬜ |
+| Phase 3 | 能力增强：后台「试调用」页（可视化调用过程 + R2 调用日志系统）✅ 2026-09-03；其余（更多内置上游、图片处理等）按需求再定 | 🔶 |
 
 ## 七、硬性约束（时刻谨记）
 
@@ -175,3 +178,16 @@ MoonAPI/
   ③ 上游返回 4xx/5xx 时返回带响应预览的诊断 JSON（code 50202）；测试弹窗展示原始响应文本。
   ④ 用户实测 yujin-root 返回 HTTP 530（上游 Cloudflare 拦截/源站异常），非本项目代码问题；
   api.yujin.cn 恢复可用后在后台直接新增其具体接口即可。
+- 2026-09-03：Phase 3（一）完成——后台新增「✦ 试调用」页面组（调用台 + 调用记录）与 R2 调用日志系统。
+  ① 新增 `functions/_utils/logger.js`：调用明细双写（明细对象 `logs/…` + 当日索引 `meta/call-log-index/…`），
+  waitUntil 异步写入不阻塞响应，保留 30 天（2% 概率触发过期清理，单次清理 ≤10 天防止超 Workers 50 子请求上限），
+  敏感参数（key/token/secret/password/apikey/authorization/access_token）写入前掩码。
+  ② 新增 `functions/api/admin/logs.js`：GET 列表（days/limit/route/slug/status/requestId 过滤 + success 汇总）、
+  GET 单条（?key=）、POST clear（keepDays 0–365）。
+  ③ `functions/api/v1/proxy/[slug].js` 与 `daily-card.js` 重写为全链路分阶段计时
+  （认证→服务解析→配额检查→缓存→上游转发→响应封装），阶段轨迹随日志落盘；
+  daily-card 新增管理员令牌回退认证（与 proxy 一致，管理员测试不计配额）。
+  ④ 前端：`/admin` 导航新增「✦ 试调用」，调用台支持目标选择 / 参数编辑 / 三种认证 / cURL 复制 /
+  Ctrl+⌘+Enter 发送，结果区展示真实响应 + 服务端阶段轨迹（requestId 轮询日志获取），
+  图片响应直接预览；调用记录含汇总卡、多维过滤、明细弹窗、自动刷新与清理入口。
+  ⑤ docs 与本文件同步更新。后续待办：wrangler 本地仿真回归 → 推送部署 → 生产真实调用压测。
